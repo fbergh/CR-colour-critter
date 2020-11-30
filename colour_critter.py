@@ -54,53 +54,62 @@ import nengo
 import numpy as np
 
 
-def move(t, x):
-    speed, rotation = x
-    dt = 0.001
-    max_speed = 20.0
-    max_rotate = 10.0
-    body.turn(rotation * dt * max_rotate)
-    body.go_forward(speed * dt * max_speed)
-
-
-# Your model might not be a nengo.Netowrk() - SPA is permitted
+# Your model might not be a nengo.Network() - SPA is permitted
 model = nengo.Network()
 with model:
-    env = grid.GridNode(world, dt=0.005)
-
-    movement = nengo.Node(move, size_in=2)
+    env = grid.GridNode(world, dt=0.001)
 
     # Three sensors for distance to the walls
     def detect(t):
+        """
+        Returns distance from wall for each sensor (maximally 4)
+        Angles of sensors are -0.5, 0, 0.5 relative to the body's angle
+        Angles are in range [0,4) (1=east, 2=south, 3=west)
+        """
         angles = (np.linspace(-0.5, 0.5, 3) + body.dir) % world.directions
         return [body.detect(d, max_distance=4)[0] for d in angles]
-
-
+        
     stim_radar = nengo.Node(detect)
 
+    # radius=4, because angles are in range [0,4)
     radar = nengo.Ensemble(n_neurons=500, dimensions=3, radius=4)
     nengo.Connection(stim_radar, radar)
 
-    # a basic movement function that just avoids walls based
-    def movement_func(x):
-        turn = x[2] - x[0]
-        spd = x[1] - 0.5
+    def movement_func(sensor_distances):
+        """
+        Basic movement function that avoids walls
+        based on distance to wall between right and left sensor
+        """
+        left, mid, right = sensor_distances
+        turn = right - left
+        spd = mid - 0.5
         return spd, turn
+        
+    def move(t, x):
+        speed, rotation = x
+        dt = 0.001
+        max_speed = 20.0
+        max_rotate = 10.0
+        body.turn(rotation * dt * max_rotate)
+        body.go_forward(speed * dt * max_speed)
 
 
-    # the movement function is only driven by information from the
-    # radar
+    # Movement node gets as input speed and turn variables and uses these
+    # to compute how much the agent should move and turn
+    movement = nengo.Node(move, size_in=2)
     nengo.Connection(radar, movement, function=movement_func)
 
     # if you wanted to know the position in the world, this is how to do it
     # The first two dimensions are X,Y coordinates, the third is the orientation
     # (plotting XY value shows the first two dimensions)
     def position_func(t):
-        return body.x / world.width * 2 - 1, 1 - body.y / world.height * 2, body.dir / world.directions
-
-
+        x_pos = body.x / world.width * 2 - 1
+        y_pos = 1 - body.y / world.height * 2
+        orientation = body.dir / world.directions
+        return x_pos, y_pos, orientation
     position = nengo.Node(position_func)
 
-    # This node returns the colour of the cell currently occupied. Note that you might want to transform this into
-    # something else (see the assignment)
+    # This node returns the colour of the cell currently occupied. 
+    # Note that you might want to transform this into something else 
+    # (see the assignment)
     current_color = nengo.Node(lambda t: body.cell.cellcolor)
