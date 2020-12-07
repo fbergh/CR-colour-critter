@@ -3,12 +3,13 @@ import grid
 mymap = """
 #######
 #  M  #
+# # #B#
 # # # #
-# #B# #
 #G Y R#
 #######
 """
 
+COLOURS = ["GREEN", "RED", "BLUE", "MAGENTA", "YELLOW"]
 
 class Cell(grid.Cell):
 
@@ -50,15 +51,20 @@ world = grid.World(Cell, map=mymap, directions=4)
 body = grid.ContinuousAgent()
 world.add(body, x=1, y=2, dir=2)
 
-N = 500
-D = 32
-
 import nengo
 import nengo.spa as spa
 import numpy as np
 
+# Vocabulary of colours
 vc = spa.Vocabulary(D)
-vc.parse("GREEN+RED+BLUE+MAGENTA+YELLOW")
+vc.parse(COLOURS.join('+'))
+
+# #neurons for ensemble
+N = 500
+# #dimensions for SPA states
+D = 64
+# Threshold for the dot-product between colour and memory to see if it's counted
+C_THRESH = 0.5
 
 # Your model might not be a nengo.Network() - SPA is permitted
 model = spa.SPA()
@@ -120,59 +126,45 @@ with model:
     # (see the assignment)
     current_color = nengo.Node(lambda t: body.cell.cellcolor)
     
-    # colour_memory = nengo.Ensemble(n_neurons=N, dimensions=5)
-    # # Green
-    # nengo.Connection(current_color, colour_memory[0], function=lambda c: c==1)
-    # # Red
-    # nengo.Connection(current_color, colour_memory[1], function=lambda c: c==2)
-    # # Blue
-    # nengo.Connection(current_color, colour_memory[2], function=lambda c: c==3)
-    # # Magenta
-    # nengo.Connection(current_color, colour_memory[3], function=lambda c: c==4)
-    # # Yellow
-    # nengo.Connection(current_color, colour_memory[4], function=lambda c: c==5)
-    
+    # Create intermediate memory for every coloru
     model.gre_mem = spa.State(D, feedback=1, vocab=vc)
     model.red_mem = spa.State(D, feedback=1, vocab=vc)
     model.blu_mem = spa.State(D, feedback=1, vocab=vc)
     model.mag_mem = spa.State(D, feedback=1, vocab=vc)
     model.yel_mem = spa.State(D, feedback=1, vocab=vc)
-    # def fun(x):
-    #     print(x)
-    #     return np.ones((D,1)) * x
+    # Connect current_color to all intermediate memories
+    # (*3 such that seen values have a high value)
     nengo.Connection(current_color, model.gre_mem.input,
-                     transform=vc["GREEN"].v.reshape(D,1))
-    # nengo.Connection(current_color, model.red_mem.input,
-    #                  function=lambda c: c==2 * vc["RED"].v.reshape(D,1))
-    # nengo.Connection(current_color, model.blu_mem.input,
-    #                  function=lambda c: c==3 * vc["BLUE"].v.reshape(D,1))
-    # nengo.Connection(current_color, model.mag_mem.input,
-    #                  function=lambda c: c==4 * vc["MAGENTA"].v.reshape(D,1))
-    # nengo.Connection(current_color, model.yel_mem.input,
-    #                  function=lambda c: c==5 * vc["YELLOW"].v.reshape(D,1))
-    # nengo.Connection(colour_memory[0], 
-    #                  model.c_mem.input, 
-    #                  transform=vc["GREEN"].v.reshape(D, 1))
-    # nengo.Connection(colour_memory[1], 
-    #                  model.c_mem.input, 
-    #                  transform=vc["RED"].v.reshape(D, 1))
-    # nengo.Connection(colour_memory[2], 
-    #                  model.c_mem.input, 
-    #                  transform=vc["BLUE"].v.reshape(D, 1))
-    # nengo.Connection(colour_memory[3], 
-    #                  model.c_mem.input, 
-    #                  transform=vc["MAGENTA"].v.reshape(D, 1))
-    # nengo.Connection(colour_memory[4], 
-    #                  model.c_mem.input, 
-    #                  transform=vc["YELLOW"].v.reshape(D, 1))
-    # nengo.Connection(colour_memory, colour_memory, transform=2)
+                     function=lambda c: 3 * int(c==1) * vc["GREEN"].v.reshape(D))
+    nengo.Connection(current_color, model.red_mem.input,
+                     function=lambda c: 3 * int(c==2) * vc["RED"].v.reshape(D))
+    nengo.Connection(current_color, model.blu_mem.input,
+                     function=lambda c: 3 * int(c==3) * vc["BLUE"].v.reshape(D))
+    nengo.Connection(current_color, model.mag_mem.input,
+                     function=lambda c: 3 * int(c==4) * vc["MAGENTA"].v.reshape(D))
+    nengo.Connection(current_color, model.yel_mem.input,
+                     function=lambda c: 3 * int(c==5) * vc["YELLOW"].v.reshape(D))
     
-    # colour_counter = nengo.Ensemble(n_neurons=N, dimensions=1, radius=5)
-    # def thresh_sum(c_memory):
-    #     counter = []
-    #     for c in c_memory:
-    #         counter.append(c > 0.8)
-    #     return sum(counter)
-    # nengo.Connection(colour_memory, colour_counter, function=thresh_sum)
+    # Create one big memory connected to all intermediate memories
+    model.all_mem = spa.State(D, feedback=1, vocab=vc)
+    actions = spa.Actions(
+        "all_mem = gre_mem + red_mem + blu_mem + mag_mem + yel_mem"
+    )
+    # spa.Cortical always carries out its action (unlike BasalGanglia)
+    model.cort = spa.Cortical(actions=actions)
     
+    # Little hacky: all_mem.output is a Node that returns no output
+    # By setting the node's output to the identity function, we can 
+    # access its memory (Do we actually want this?)
+    model.all_mem.output.output = lambda t, x: x
+    def count_colours_from_memory(all_mem):
+        is_colour = np.array([np.dot(all_mem, vc[c].v.reshape(D))
+                              for c in COLOURS])
+        return np.sum(is_colour > C_THRESH)
+    
+    # Define a colour counter
+    colour_counter = nengo.Ensemble(N, dimensions=1, radius=5)
+    # Connect it to the memory's output with the count_colours function
+    nengo.Connection(model.all_mem.output, colour_counter, 
+                     function=count_colours_from_memory)
     
