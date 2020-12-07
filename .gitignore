@@ -1,3 +1,6 @@
+# Mac specific magic
+.DS_Store
+
 ###########
 # PYCHARM #
 ###########
