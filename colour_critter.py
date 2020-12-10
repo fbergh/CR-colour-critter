@@ -57,11 +57,13 @@ import nengo.spa as spa
 import numpy as np
 
 # #neurons for ensemble
-N = 500
+N = 512
 # #dimensions for SPA states
 D = 64
 # Threshold for the dot-product between colour and memory to see if it's counted
-C_THRESH = 0.5
+COLOUR_PERCEPTION_THRESH = 0.5
+# Threshold for the difference between #goal_colours and #colours_found
+STOP_THRESHOLD = 0.5
 
 # Vocabulary of colours
 vc = spa.Vocabulary(D)
@@ -81,39 +83,47 @@ with model:
         """
         angles = (np.linspace(-0.5, 0.5, 3) + body.dir) % world.directions
         return [body.detect(d, max_distance=4)[0] for d in angles]
-
-
     stim_radar = nengo.Node(detect)
 
     # radius=4, because angles are in range [0,4)
     radar = nengo.Ensemble(n_neurons=N, dimensions=3, radius=4)
     nengo.Connection(stim_radar, radar)
 
+    def compute_speed(sensor_distances):
+        """
+        Basic movement function that avoids walls
+        based on distance to wall from front sensor
+        """
+        left, mid, right = sensor_distances
+        return mid - 0.5
 
-    def movement_func(sensor_distances):
+
+    def compute_turn(sensor_distances):
         """
         Basic movement function that avoids walls
         based on distance to wall between right and left sensor
         """
         left, mid, right = sensor_distances
-        turn = right - left
-        spd = mid - 0.5
-        return spd, turn
+        return right - left
 
 
     def move(t, x):
-        speed, rotation = x
+        speed, rotation, do_move = x
         dt = 0.001
         max_speed = 20.0
         max_rotate = 10.0
-        body.turn(rotation * dt * max_rotate)
-        body.go_forward(speed * dt * max_speed)
+        body.turn(rotation * dt * max_rotate * do_move)
+        body.go_forward(speed * dt * max_speed * do_move)
 
+    # Create ensemble to gather information about the agent's movement
+    # Namely: speed (dim 0), turn speed (dim 1), and if we should stop moving (dim 2)
+    movement_info = nengo.Ensemble(n_neurons=N, dimensions=3)
+    nengo.Connection(radar, movement_info[0], function=compute_speed)
+    nengo.Connection(radar, movement_info[1], function=compute_turn)
 
     # Movement node gets as input speed and turn variables and uses these
     # to compute how much the agent should move and turn
-    movement = nengo.Node(move, size_in=2)
-    nengo.Connection(radar, movement, function=movement_func)
+    movement_output = nengo.Node(move, size_in=3)
 
     # if you wanted to know the position in the world, this is how to do it
     # The first two dimensions are X,Y coordinates, the third is the orientation
@@ -123,8 +133,6 @@ with model:
         y_pos = 1 - body.y / world.height * 2
         orientation = body.dir / world.directions
         return x_pos, y_pos, orientation
-
-
     position = nengo.Node(position_func)
 
     # This node returns the colour of the cell currently occupied.
@@ -164,19 +172,44 @@ with model:
     # access its memory (Do we actually want this?)
     model.all_mem.output.output = lambda t, x: x
 
-
     # If colour_counter is an ensemble, remove t parameter
-    def count_colours_from_memory(t, all_mem):
-        is_colour = np.array([np.dot(all_mem, vc[c].v.reshape(D))
+    def count_colours_from_memory(t, all_mem_output):
+        """ Computes how many colours we have found based on the agent's memory """
+        is_colour = np.array([np.dot(all_mem_output, vc[c].v.reshape(D))
                               for c in COLOURS])
-        return np.sum(is_colour > C_THRESH)
+        return np.sum(is_colour > COLOUR_PERCEPTION_THRESH)
 
 
     # Define a colour counter
     # NOTE: Should this be a node or an ensemble??
-    colour_counter = nengo.Node(count_colours_from_memory, size_in=64)
+    colour_counter = nengo.Node(count_colours_from_memory, size_in=D)
     nengo.Connection(model.all_mem.output, colour_counter)
     # colour_counter = nengo.Ensemble(N, dimensions=1, radius=5)
     # # Connect it to the memory's output with the count_colours function
     # nengo.Connection(model.all_mem.output, colour_counter,
     #                  function=count_colours_from_memory)
+
+    # Node for user to input the desired amount of colours to find
+    colour_goal = nengo.Node([0])
+    # Ensemble to gather information about the goal number of colours and
+    # how many colours we have already found
+    colour_info = nengo.Ensemble(N, dimensions=2, radius=5)
+    nengo.Connection(colour_goal, colour_info[0])
+    nengo.Connection(colour_counter, colour_info[1])
+
+    def do_stop(colour_info_output):
+        """ Compute if agent should stop based on information from colour_info"""
+        goal, curr = colour_info_output
+        n_colours_left = goal - curr
+        # Due to Nengo imprecision, pick 0.5 as threshold
+        return n_colours_left < STOP_THRESHOLD
+
+    # Ensemble to compute if we should stop moving
+    stop_moving = nengo.Ensemble(N, dimensions=1, radius=1)
+    nengo.Connection(colour_info, stop_moving, function=do_stop)
+
+    # Connect stop_moving to third dimension of movement_info
+    # x < 0.5, such that we multiply with 0 in move function if stop_moving outputs something close to 1
+    nengo.Connection(stop_moving, movement_info[2], function=lambda x: x < 0.5)
+    # Connect movement_info to movement_output which computes movement based on movement_info
+    nengo.Connection(movement_info, movement_output)
