@@ -61,7 +61,7 @@ N = 512
 # #dimensions for SPA states
 D = 64
 # Threshold for the dot-product between colour and memory to see if it's counted
-COLOUR_PERCEPTION_THRESH = 0.5
+COLOUR_PERCEPTION_THRESH = 0.4
 # Threshold for the difference between #goal_colours and #colours_found
 STOP_THRESHOLD = 0.5
 
@@ -108,16 +108,17 @@ with model:
 
 
     def move(t, x):
-        speed, rotation, do_move = x
+        speed, rotation, stop_moving = x
         dt = 0.001
         max_speed = 20.0
         max_rotate = 10.0
+        do_move = stop_moving < 0.5
         body.turn(rotation * dt * max_rotate * do_move)
         body.go_forward(speed * dt * max_speed * do_move)
 
     # Create ensemble to gather information about the agent's movement
     # Namely: speed (dim 0), turn speed (dim 1), and if we should stop moving (dim 2)
-    movement_info = nengo.Ensemble(n_neurons=N, dimensions=3)
+    movement_info = nengo.Node(output=lambda t, x: x, size_in=3)
     nengo.Connection(radar, movement_info[0], function=compute_speed)
     nengo.Connection(radar, movement_info[1], function=compute_turn)
 
@@ -160,20 +161,22 @@ with model:
                      function=lambda c: 3 * int(c == 5) * vc["YELLOW"].v.reshape(D))
 
     # Create one big memory connected to all intermediate memories
-    model.all_mem = spa.State(D, feedback=1, vocab=vc)
+    model.all_mem = spa.State(D, vocab=vc)
+    # Hack to make memory return its input
+    model.all_mem.output.output = lambda t, x: x
     actions = spa.Actions(
         "all_mem = gre_mem + red_mem + blu_mem + mag_mem + yel_mem"
     )
     # spa.Cortical always carries out its action (unlike BasalGanglia)
     model.cort = spa.Cortical(actions=actions)
 
-    # NOTE: Little hacky: all_mem.output is a Node that returns no output
-    # By setting the node's output to the identity function, we can
-    # access its memory (Do we actually want this?)
-    model.all_mem.output.output = lambda t, x: x
+    model.cleanup = spa.AssociativeMemory(input_vocab=vc, wta_output=False, threshold=0.5, threshold_output=True)
+    # NOTE: hoe werkt synapse ook alweer?
+    nengo.Connection(model.cleanup.output, model.all_mem.input, synapse=0.05)
+    nengo.Connection(model.all_mem.output, model.cleanup.input, synapse=0.05)
 
     # If colour_counter is an ensemble, remove t parameter
-    def count_colours_from_memory(t, all_mem_output):
+    def count_colours_from_memory(all_mem_output):
         """ Computes how many colours we have found based on the agent's memory """
         is_colour = np.array([np.dot(all_mem_output, vc[c].v.reshape(D))
                               for c in COLOURS])
@@ -181,35 +184,27 @@ with model:
 
 
     # Define a colour counter
-    # NOTE: Should this be a node or an ensemble??
-    colour_counter = nengo.Node(count_colours_from_memory, size_in=D)
-    nengo.Connection(model.all_mem.output, colour_counter)
-    # colour_counter = nengo.Ensemble(N, dimensions=1, radius=5)
+    colour_counter = nengo.Ensemble(N, dimensions=1, radius=5)
     # # Connect it to the memory's output with the count_colours function
-    # nengo.Connection(model.all_mem.output, colour_counter,
-    #                  function=count_colours_from_memory)
+    nengo.Connection(model.all_mem.output, colour_counter,
+                     function=count_colours_from_memory)
 
     # Node for user to input the desired amount of colours to find
     colour_goal = nengo.Node([0])
     # Ensemble to gather information about the goal number of colours and
     # how many colours we have already found
-    colour_info = nengo.Ensemble(N, dimensions=2, radius=5)
+    colour_info = nengo.Node(lambda t, x: x, size_in=2)
     nengo.Connection(colour_goal, colour_info[0])
     nengo.Connection(colour_counter, colour_info[1])
 
     def do_stop(colour_info_output):
-        """ Compute if agent should stop based on information from colour_info"""
+        # """ Compute if agent should stop based on information from colour_info"""
         goal, curr = colour_info_output
         n_colours_left = goal - curr
         # Due to Nengo imprecision, pick 0.5 as threshold
         return n_colours_left < STOP_THRESHOLD
 
-    # Ensemble to compute if we should stop moving
-    stop_moving = nengo.Ensemble(N, dimensions=1, radius=1)
-    nengo.Connection(colour_info, stop_moving, function=do_stop)
-
-    # Connect stop_moving to third dimension of movement_info
-    # x < 0.5, such that we multiply with 0 in move function if stop_moving outputs something close to 1
-    nengo.Connection(stop_moving, movement_info[2], function=lambda x: x < 0.5)
+    # Connect colour_info to third dimension of movement_info by computing if agent should stop
+    nengo.Connection(colour_info, movement_info[2], function=do_stop)
     # Connect movement_info to movement_output which computes movement based on movement_info
     nengo.Connection(movement_info, movement_output)
