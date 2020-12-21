@@ -59,11 +59,13 @@ import numpy as np
 # #neurons for ensemble
 N = 512
 # #dimensions for SPA states
-D = 64
+D = 256
 # Threshold for the dot-product between colour and memory to see if it's counted
-COLOUR_PERCEPTION_THRESH = 0.4
+COLOUR_PERCEPTION_THRESH = 0.5
 # Threshold for the difference between #goal_colours and #colours_found
 STOP_THRESHOLD = 0.5
+# Memory constant
+MEMORY_CONSTANT = 1.5
 
 # Vocabulary of colours
 vc = spa.Vocabulary(D)
@@ -108,23 +110,20 @@ with model:
 
 
     def move(t, x):
-        speed, rotation, stop_moving = x
+        speed, rotation, do_stop = x
         dt = 0.001
-        max_speed = 20.0
+        max_speed = 8.0
         max_rotate = 10.0
-        do_move = stop_moving < 0.5
+        # The agent should keep moving if it shouldn't stop (so invert do_stop)
+        do_move = do_stop < 0.5
         body.turn(rotation * dt * max_rotate * do_move)
         body.go_forward(speed * dt * max_speed * do_move)
 
     # Create ensemble to gather information about the agent's movement
     # Namely: speed (dim 0), turn speed (dim 1), and if we should stop moving (dim 2)
-    movement_info = nengo.Node(output=lambda t, x: x, size_in=3)
+    movement_info = nengo.Node(output=move, size_in=3)
     nengo.Connection(radar, movement_info[0], function=compute_speed)
     nengo.Connection(radar, movement_info[1], function=compute_turn)
-
-    # Movement node gets as input speed and turn variables and uses these
-    # to compute how much the agent should move and turn
-    movement_output = nengo.Node(move, size_in=3)
 
     # if you wanted to know the position in the world, this is how to do it
     # The first two dimensions are X,Y coordinates, the third is the orientation
@@ -141,37 +140,28 @@ with model:
     # (see the assignment)
     current_color = nengo.Node(lambda t: body.cell.cellcolor)
 
-    # Create intermediate memory for every colour
-    model.gre_mem = spa.State(D, feedback=1, vocab=vc)
-    model.red_mem = spa.State(D, feedback=1, vocab=vc)
-    model.blu_mem = spa.State(D, feedback=1, vocab=vc)
-    model.mag_mem = spa.State(D, feedback=1, vocab=vc)
-    model.yel_mem = spa.State(D, feedback=1, vocab=vc)
-    # Connect current_color to all intermediate memories
-    # (*3 such that seen values have a high value)
-    nengo.Connection(current_color, model.gre_mem.input,
-                     function=lambda c: 3 * int(c == 1) * vc["GREEN"].v.reshape(D))
-    nengo.Connection(current_color, model.red_mem.input,
-                     function=lambda c: 3 * int(c == 2) * vc["RED"].v.reshape(D))
-    nengo.Connection(current_color, model.blu_mem.input,
-                     function=lambda c: 3 * int(c == 3) * vc["BLUE"].v.reshape(D))
-    nengo.Connection(current_color, model.mag_mem.input,
-                     function=lambda c: 3 * int(c == 4) * vc["MAGENTA"].v.reshape(D))
-    nengo.Connection(current_color, model.yel_mem.input,
-                     function=lambda c: 3 * int(c == 5) * vc["YELLOW"].v.reshape(D))
+    def recognise_colour(c):
+        """ Send word from vocab if it's active (multiplied with a constant so it gets remembered) """
+        vc_c = np.zeros(D)
+        if c == 1:
+            vc_c = vc["GREEN"].v.reshape(D)
+        elif c == 2:
+            vc_c = vc["RED"].v.reshape(D)
+        elif c == 3:
+            vc_c = vc["BLUE"].v.reshape(D)
+        elif c == 4:
+            vc_c = vc["MAGENTA"].v.reshape(D)
+        elif c == 5:
+            vc_c = vc["YELLOW"].v.reshape(D)
+        return MEMORY_CONSTANT * vc_c
 
-    # Create one big memory connected to all intermediate memories
-    model.all_mem = spa.State(D, vocab=vc)
+    # Create one big memory connected to all intermediate memories (add small feedback so it doesn't forget)
+    model.all_mem = spa.State(D, vocab=vc, feedback=0.5)
     # Hack to make memory return its input
     model.all_mem.output.output = lambda t, x: x
-    actions = spa.Actions(
-        "all_mem = gre_mem + red_mem + blu_mem + mag_mem + yel_mem"
-    )
-    # spa.Cortical always carries out its action (unlike BasalGanglia)
-    model.cort = spa.Cortical(actions=actions)
+    nengo.Connection(current_color, model.all_mem.input, function=recognise_colour)
 
-    model.cleanup = spa.AssociativeMemory(input_vocab=vc, wta_output=False, threshold=0.5, threshold_output=True)
-    # NOTE: hoe werkt synapse ook alweer?
+    model.cleanup = spa.AssociativeMemory(input_vocab=vc, wta_output=False)
     nengo.Connection(model.cleanup.output, model.all_mem.input, synapse=0.05)
     nengo.Connection(model.all_mem.output, model.cleanup.input, synapse=0.05)
 
@@ -193,18 +183,11 @@ with model:
     colour_goal = nengo.Node([0])
     # Ensemble to gather information about the goal number of colours and
     # how many colours we have already found
-    colour_info = nengo.Node(lambda t, x: x, size_in=2)
+    colour_info = nengo.Ensemble(n_neurons=N, dimensions=2, radius=5)
     nengo.Connection(colour_goal, colour_info[0])
     nengo.Connection(colour_counter, colour_info[1])
 
-    def do_stop(colour_info_output):
-        # """ Compute if agent should stop based on information from colour_info"""
-        goal, curr = colour_info_output
-        n_colours_left = goal - curr
-        # Due to Nengo imprecision, pick 0.5 as threshold
-        return n_colours_left < STOP_THRESHOLD
-
-    # Connect colour_info to third dimension of movement_info by computing if agent should stop
-    nengo.Connection(colour_info, movement_info[2], function=do_stop)
-    # Connect movement_info to movement_output which computes movement based on movement_info
-    nengo.Connection(movement_info, movement_output)
+    compute_diff = nengo.Ensemble(n_neurons=N, dimensions=1, radius=5)
+    # Lambda x, where c_info[0] = goal, c_info[1] = counter
+    nengo.Connection(colour_info, compute_diff, function=lambda c_info: c_info[0] - c_info[1])
+    nengo.Connection(compute_diff, movement_info[2], function=lambda difference: difference < STOP_THRESHOLD)
