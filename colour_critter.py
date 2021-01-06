@@ -1,11 +1,13 @@
 import grid
+# import random
+import numpy as np
 
 mymap = """
 #######
 #  M  #
 # # #B#
-# # # #
-#G Y R#
+# #Y# #
+#G   R#
 #######
 """
 
@@ -106,9 +108,25 @@ with model:
         based on distance to wall between right and left sensor
         """
         left, mid, right = sensor_distances
-        return right - left
+        turn = right - left
+        return turn
 
-
+    
+    def exploration_move(rotation, dt, max_rotate, do_move):
+        """
+        Determine agent rotation such that the agent will randomly go right
+        or left some of the time with some probability, as to explore the
+        environment.
+        """
+        avoid = rotation * dt * max_rotate * do_move
+        left = -1
+        right = 1
+        
+        move = np.random.choice([avoid, left, right], p=[0.998, 0.001, 0.001]) * do_move
+        
+        return move
+        
+        
     def move(t, x):
         speed, rotation, do_stop = x
         dt = 0.001
@@ -116,8 +134,12 @@ with model:
         max_rotate = 10.0
         # The agent should keep moving if it shouldn't stop (so invert do_stop)
         do_move = do_stop < 0.5
-        body.turn(rotation * dt * max_rotate * do_move)
-        body.go_forward(speed * dt * max_speed * do_move)
+        # Compute rotation and speed 
+        turn = exploration_move(rotation, dt, max_rotate, do_move)
+        forward = speed * dt * max_speed * do_move
+        # Perform action
+        body.turn(turn)
+        body.go_forward(forward)
 
     # Create ensemble to gather information about the agent's movement
     # Namely: speed (dim 0), turn speed (dim 1), and if we should stop moving (dim 2)
