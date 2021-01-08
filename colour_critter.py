@@ -92,7 +92,7 @@ with model:
     # radius=4, because angles are in range [0,4)
     radar = nengo.Ensemble(n_neurons=N, dimensions=3, radius=4)
     nengo.Connection(stim_radar, radar)
-
+    
     def compute_speed(sensor_distances):
         """
         Basic movement function that avoids walls
@@ -112,30 +112,34 @@ with model:
         return turn
 
     
-    def exploration_move(rotation, dt, max_rotate, do_move):
+    def exploration_move(rotation, dt, max_rotate, do_move, noise):
         """
         Determine agent rotation such that the agent will randomly go right
-        or left some of the time with some probability, as to explore the
+        or left based on a noisy signal, as to explore the
         environment.
         """
-        avoid = rotation * dt * max_rotate * do_move
-        left = -1
-        right = 1
+        avoid = rotation * dt * max_rotate
+        left = -0.75
+        right = 0.75
         
-        move = np.random.choice([avoid, left, right], p=[0.998, 0.001, 0.001]) * do_move
+        move = avoid
+        if noise > 0.8:
+            move = right
+        if noise < -0.8:
+            move = left
         
-        return move
+        return move * do_move
         
         
     def move(t, x):
-        speed, rotation, do_stop = x
+        speed, rotation, do_stop, noise = x
         dt = 0.001
         max_speed = 8.0
         max_rotate = 10.0
         # The agent should keep moving if it shouldn't stop (so invert do_stop)
         do_move = do_stop < 0.5
         # Compute rotation and speed 
-        turn = exploration_move(rotation, dt, max_rotate, do_move)
+        turn = exploration_move(rotation, dt, max_rotate, do_move, noise)
         forward = speed * dt * max_speed * do_move
         # Perform action
         body.turn(turn)
@@ -143,9 +147,14 @@ with model:
 
     # Create ensemble to gather information about the agent's movement
     # Namely: speed (dim 0), turn speed (dim 1), and if we should stop moving (dim 2)
-    movement_info = nengo.Node(output=move, size_in=3)
+    movement_info = nengo.Node(output=move, size_in=4)
     nengo.Connection(radar, movement_info[0], function=compute_speed)
     nengo.Connection(radar, movement_info[1], function=compute_turn)
+    
+    # Add noise
+    noise_process = nengo.processes.WhiteNoise(dist=nengo.dists.Gaussian(0, 1), scale=False)
+    noise = nengo.Node(noise_process)
+    nengo.Connection(noise, movement_info[3])
 
     # if you wanted to know the position in the world, this is how to do it
     # The first two dimensions are X,Y coordinates, the third is the orientation
