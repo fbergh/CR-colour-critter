@@ -69,7 +69,7 @@ STOP_THRESHOLD = 0.5
 # Memory constant
 MEMORY_CONSTANT = 1.5
 # Exploration threshold
-EXPLORE_THRESHOLD = 0.6
+EXPLORE_THRESHOLD = 0.7
 
 # Vocabulary of colours
 vc = spa.Vocabulary(D)
@@ -88,8 +88,12 @@ with model:
         Angles are in range [0,4) (1=east, 2=south, 3=west)
         """
         angles = (np.linspace(-0.5, 0.5, 3) + body.dir) % world.directions
+        
+        # Added arms to be able to detect whether there is room to turn 
+        # left or right.
         arms = (np.linspace(-1, 1, 2) + body.dir) % world.directions
         angles = np.append(angles, arms)
+        
         return [body.detect(d, max_distance=4)[0] for d in angles]
     stim_radar = nengo.Node(detect)
 
@@ -116,18 +120,21 @@ with model:
         return turn, arm_left, arm_right
 
     
-    def exploration_move(rotation, dt, max_rotate, do_move, noise, left_arm, right_arm, turn=0.75):
+    def exploration_move(move, do_move, noise, left_arm, right_arm, turn=0.75):
         """
         Determine agent rotation such that the agent will randomly go right
-        or left based on a noisy signal, as to explore the
-        environment.
+        or left based on a noisy signal and whether there is room to turn, 
+        as to explore the environment.
         """
-        avoid = rotation * dt * max_rotate
-        move = avoid
-        if (noise > EXPLORE_THRESHOLD) & (right_arm > 2):
-            move = turn # right
-        if (noise < -EXPLORE_THRESHOLD) & (left_arm > 2):
-            move = -turn # left
+        turn_dist = 2
+        
+        # Turning right
+        if (noise > EXPLORE_THRESHOLD) & (right_arm > turn_dist):
+            move = turn 
+            
+        # Turning left
+        if (noise < -EXPLORE_THRESHOLD) & (left_arm > turn_dist):
+            move = -turn 
         
         return move * do_move
         
@@ -137,11 +144,15 @@ with model:
         dt = 0.001
         max_speed = 8.0
         max_rotate = 10.0
+        
         # The agent should keep moving if it shouldn't stop (so invert do_stop)
         do_move = do_stop < 0.5
+        
         # Compute rotation and speed 
-        turn = exploration_move(rotation, dt, max_rotate, do_move, noise, left_arm, right_arm)
+        basic_move = rotation * dt * max_rotate
+        turn = exploration_move(basic_move, do_move, noise, left_arm, right_arm)
         forward = speed * dt * max_speed * do_move
+        
         # Perform action
         body.turn(turn)
         body.go_forward(forward)
