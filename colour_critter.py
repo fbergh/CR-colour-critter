@@ -143,13 +143,13 @@ with model:
         
         
     def move(t, x):
-        speed, rotation, left_arm, right_arm, do_stop, noise, cooldown_value = x
+        speed, rotation, left_arm, right_arm, noise, cooldown_value = x
         dt = 0.001
         max_speed = 8.0
         max_rotate = 10.0
         
         # The agent should keep moving if it shouldn't stop (so invert do_stop)
-        do_move = do_stop < 0.5
+        do_move = 1 #do_stop < 0.5
         # Compute rotation and speed 
         basic_move = rotation * dt * max_rotate
         # The agent should not do a sharp turn if the cooldown is still active
@@ -163,14 +163,14 @@ with model:
 
     # Create ensemble to gather information about the agent's movement
     # Namely: speed (dim 0), turn speed (dim 1), and if we should stop moving (dim 2)
-    movement_info = nengo.Node(output=move, size_in=7)
+    movement_info = nengo.Node(output=move, size_in=6)
     nengo.Connection(radar, movement_info[0], function=compute_speed)
     nengo.Connection(radar, movement_info[1:4], function=compute_turn)
     
     # Add noise
     noise_process = nengo.processes.WhiteNoise(dist=nengo.dists.Gaussian(0, 1), scale=False)
     noise = nengo.Node(noise_process)
-    nengo.Connection(noise, movement_info[5])
+    nengo.Connection(noise, movement_info[4])
 
     # Cooldown memory to remember when we are allowed to turn
     model.cooldown_mem = spa.State(D, vocab=cooldown_vocab, feedback=0.9)
@@ -198,7 +198,7 @@ with model:
     nengo.Connection(model.cooldown_mem.output, cooldown_value,
                      function=lambda cooldown_mem: np.dot(cooldown_mem, cooldown_vocab["COOLDOWN"].v.reshape(D)))
     nengo.Connection(cooldown_value, intermediate_cooldown[1])
-    nengo.Connection(cooldown_value, movement_info[6])
+    nengo.Connection(cooldown_value, movement_info[5])
     
     # if you wanted to know the position in the world, this is how to do it
     # The first two dimensions are X,Y coordinates, the third is the orientation
@@ -265,4 +265,8 @@ with model:
     compute_diff = nengo.Ensemble(n_neurons=N, dimensions=1, radius=5)
     # Lambda x, where c_info[0] = goal, c_info[1] = counter
     nengo.Connection(colour_info, compute_diff, function=lambda c_info: c_info[0] - c_info[1])
-    nengo.Connection(compute_diff, movement_info[4], function=lambda difference: difference < STOP_THRESHOLD)
+    # nengo.Connection(compute_diff, movement_info[4], function=lambda difference: difference < STOP_THRESHOLD)
+    
+    stop = nengo.Ensemble(n_neurons=N, dimensions=1, radius=1)
+    nengo.Connection(compute_diff, stop, function=lambda difference: difference < STOP_THRESHOLD)
+    nengo.Connection(stop, radar.neurons, transform = [[-2.5]] * N)
