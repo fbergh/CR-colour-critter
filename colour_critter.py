@@ -124,7 +124,7 @@ with model:
         turn = right - left
         return turn, arm_left, arm_right
       
-    def exploration_move(move, do_move, noise, left_arm, right_arm, is_no_cooldown, turn=0.75):
+    def exploration_move(move, noise, left_arm, right_arm, is_no_cooldown, turn=0.75):
         """
         Determine agent rotation such that the agent will randomly go right
         or left based on a noisy signal and whether there is room to turn, 
@@ -139,7 +139,7 @@ with model:
         if (noise < -EXPLORE_THRESHOLD) and (left_arm > turn_dist) and is_no_cooldown:
             move = -turn 
         
-        return move * do_move
+        return move
         
         
     def move(t, x):
@@ -148,14 +148,12 @@ with model:
         max_speed = 8.0
         max_rotate = 10.0
         
-        # The agent should keep moving if it shouldn't stop (so invert do_stop)
-        do_move = 1 #do_stop < 0.5
         # Compute rotation and speed 
         basic_move = rotation * dt * max_rotate
         # The agent should not do a sharp turn if the cooldown is still active
         is_no_cooldown = cooldown_value < COOLDOWN_THRESHOLD
-        turn = exploration_move(basic_move, do_move, noise, left_arm, right_arm, is_no_cooldown)
-        forward = speed * dt * max_speed * do_move
+        turn = exploration_move(basic_move, noise, left_arm, right_arm, is_no_cooldown)
+        forward = speed * dt * max_speed
         
         # Perform action
         body.turn(turn)
@@ -265,8 +263,9 @@ with model:
     compute_diff = nengo.Ensemble(n_neurons=N, dimensions=1, radius=5)
     # Lambda x, where c_info[0] = goal, c_info[1] = counter
     nengo.Connection(colour_info, compute_diff, function=lambda c_info: c_info[0] - c_info[1])
-    # nengo.Connection(compute_diff, movement_info[4], function=lambda difference: difference < STOP_THRESHOLD)
-    
+   
+    # Ensemble that indicates whether the agent should stop moving
     stop = nengo.Ensemble(n_neurons=N, dimensions=1, radius=1)
     nengo.Connection(compute_diff, stop, function=lambda difference: difference < STOP_THRESHOLD)
+    # Stop the agent by using an inhibitory connection to the radar
     nengo.Connection(stop, radar.neurons, transform = [[-2.5]] * N)
