@@ -69,8 +69,7 @@ STOP_THRESHOLD = 0.5
 # Memory constant
 MEMORY_CONSTANT = 1.5
 # Exploration threshold
-EXPLORE_THRESHOLD = 0.9
-# x
+EXPLORE_THRESHOLD = 0.7
 COOLDOWN_THRESHOLD = 0.35
 
 # Vocabulary of colours
@@ -94,11 +93,17 @@ with model:
         Angles are in range [0,4) (1=east, 2=south, 3=west)
         """
         angles = (np.linspace(-0.5, 0.5, 3) + body.dir) % world.directions
+        
+        # Added arms to be able to detect whether there is room to turn 
+        # left or right.
+        arms = (np.linspace(-1, 1, 2) + body.dir) % world.directions
+        angles = np.append(angles, arms)
+        
         return [body.detect(d, max_distance=4)[0] for d in angles]
     stim_radar = nengo.Node(detect)
 
     # radius=4, because angles are in range [0,4)
-    radar = nengo.Ensemble(n_neurons=N, dimensions=3, radius=4)
+    radar = nengo.Ensemble(n_neurons=N, dimensions=5, radius=4)
     nengo.Connection(stim_radar, radar)
     
     def compute_speed(sensor_distances):
@@ -106,7 +111,7 @@ with model:
         Basic movement function that avoids walls
         based on distance to wall from front sensor
         """
-        left, mid, right = sensor_distances
+        left, mid, right, arm_left, arm_right = sensor_distances
         return mid - 0.5
 
 
@@ -115,55 +120,57 @@ with model:
         Basic movement function that avoids walls
         based on distance to wall between right and left sensor
         """
-        left, mid, right = sensor_distances
+        left, mid, right, arm_left, arm_right = sensor_distances
         turn = right - left
-        return turn
-
-    
-    def exploration_move(rotation, dt, max_rotate, do_move, noise, is_no_cooldown, turn=0.75):
+        return turn, arm_left, arm_right
+      
+    def exploration_move(move, do_move, noise, left_arm, right_arm, is_no_cooldown, turn=0.75):
         """
         Determine agent rotation such that the agent will randomly go right
-        or left based on a noisy signal, as to explore the
-        environment.
+        or left based on a noisy signal and whether there is room to turn, 
+        as to explore the environment.
         """
-        avoid = rotation * dt * max_rotate
-        move = avoid
-        
-        if noise > EXPLORE_THRESHOLD and is_no_cooldown:
-            move = turn # right
-        if noise < -EXPLORE_THRESHOLD and is_no_cooldown:
-            move = -turn # left
+        turn_dist = 2
+        # Turning right
+        if (noise > EXPLORE_THRESHOLD) and (right_arm > turn_dist) and is_no_cooldown:
+            move = turn 
+            
+        # Turning left
+        if (noise < -EXPLORE_THRESHOLD) and (left_arm > turn_dist) and is_no_cooldown:
+            move = -turn 
         
         return move * do_move
         
         
     def move(t, x):
-        speed, rotation, do_stop, noise, cooldown_value = x
+        speed, rotation, left_arm, right_arm, do_stop, noise, cooldown_value = x
         dt = 0.001
         max_speed = 8.0
         max_rotate = 10.0
+        
         # The agent should keep moving if it shouldn't stop (so invert do_stop)
         do_move = do_stop < 0.5
+        # Compute rotation and speed 
+        basic_move = rotation * dt * max_rotate
         # The agent should not do a sharp turn if the cooldown is still active
         is_no_cooldown = cooldown_value < COOLDOWN_THRESHOLD
-        # Compute rotation and speed 
-        turn = exploration_move(rotation, dt, max_rotate, do_move, noise, is_no_cooldown)
+        turn = exploration_move(basic_move, do_move, noise, left_arm, right_arm, is_no_cooldown)
         forward = speed * dt * max_speed * do_move
+        
         # Perform action
         body.turn(turn)
         body.go_forward(forward)
 
     # Create ensemble to gather information about the agent's movement
-    # Namely: speed (dim 0), turn speed (dim 1), and if we should stop moving (dim 2), noise for exploration (dim 3),
-    # the current cooldown value on the exploration behaviour (dim 5)
-    movement_info = nengo.Node(output=move, size_in=5)
+    # Namely: speed (dim 0), turn speed (dim 1), and if we should stop moving (dim 2)
+    movement_info = nengo.Node(output=move, size_in=7)
     nengo.Connection(radar, movement_info[0], function=compute_speed)
-    nengo.Connection(radar, movement_info[1], function=compute_turn)
-
+    nengo.Connection(radar, movement_info[1:4], function=compute_turn)
+    
     # Add noise
     noise_process = nengo.processes.WhiteNoise(dist=nengo.dists.Gaussian(0, 1), scale=False)
     noise = nengo.Node(noise_process)
-    nengo.Connection(noise, movement_info[3])
+    nengo.Connection(noise, movement_info[5])
 
     # Cooldown memory to remember when we are allowed to turn
     model.cooldown_mem = spa.State(D, vocab=cooldown_vocab, feedback=0.9)
@@ -191,8 +198,8 @@ with model:
     nengo.Connection(model.cooldown_mem.output, cooldown_value,
                      function=lambda cooldown_mem: np.dot(cooldown_mem, cooldown_vocab["COOLDOWN"].v.reshape(D)))
     nengo.Connection(cooldown_value, intermediate_cooldown[1])
-    nengo.Connection(cooldown_value, movement_info[4])
-
+    nengo.Connection(cooldown_value, movement_info[6])
+    
     # if you wanted to know the position in the world, this is how to do it
     # The first two dimensions are X,Y coordinates, the third is the orientation
     # (plotting XY value shows the first two dimensions)
@@ -258,4 +265,4 @@ with model:
     compute_diff = nengo.Ensemble(n_neurons=N, dimensions=1, radius=5)
     # Lambda x, where c_info[0] = goal, c_info[1] = counter
     nengo.Connection(colour_info, compute_diff, function=lambda c_info: c_info[0] - c_info[1])
-    nengo.Connection(compute_diff, movement_info[2], function=lambda difference: difference < STOP_THRESHOLD)
+    nengo.Connection(compute_diff, movement_info[4], function=lambda difference: difference < STOP_THRESHOLD)
