@@ -68,6 +68,8 @@ COLOUR_PERCEPTION_THRESH = 0.5
 STOP_THRESHOLD = 0.5
 # Memory constant
 MEMORY_CONSTANT = 1.5
+# Exploration threshold
+EXPLORE_THRESHOLD = 0.8
 
 # Vocabulary of colours
 vc = spa.Vocabulary(D)
@@ -112,21 +114,19 @@ with model:
         return turn
 
     
-    def exploration_move(rotation, dt, max_rotate, do_move, noise):
+    def exploration_move(rotation, dt, max_rotate, do_move, noise, turn=0.75):
         """
         Determine agent rotation such that the agent will randomly go right
         or left based on a noisy signal, as to explore the
         environment.
         """
         avoid = rotation * dt * max_rotate
-        left = -0.75
-        right = 0.75
-        
         move = avoid
-        if noise > 0.8:
-            move = right
-        if noise < -0.8:
-            move = left
+        
+        if noise > EXPLORE_THRESHOLD:
+            move = turn # right
+        if noise < -EXPLORE_THRESHOLD:
+            move = -turn # left
         
         return move * do_move
         
