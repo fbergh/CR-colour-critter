@@ -5,8 +5,8 @@ import numpy as np
 mymap = """
 #######
 #  M  #
-# # #B#
-# #Y# #
+#    B#
+#  Y  #
 #G   R#
 #######
 """
@@ -70,7 +70,8 @@ STOP_THRESHOLD = 0.5
 MEMORY_CONSTANT = 1.5
 # Exploration threshold
 EXPLORE_THRESHOLD = 0.7
-COOLDOWN_THRESHOLD = 0.35
+# Turn threshold
+TURN_THRESHOLD = 3
 
 # Vocabulary of colours
 vc = spa.Vocabulary(D)
@@ -93,66 +94,67 @@ with model:
         Angles are in range [0,4) (1=east, 2=south, 3=west)
         """
         angles = (np.linspace(-0.5, 0.5, 3) + body.dir) % world.directions
-        
+        return [body.detect(d, max_distance=4)[0] for d in angles]
+    
+    stim_radar = nengo.Node(detect)
+    
+    def arms(t):
         # Added arms to be able to detect whether there is room to turn 
         # left or right.
         arms = (np.linspace(-1, 1, 2) + body.dir) % world.directions
-        angles = np.append(angles, arms)
-        
-        return [body.detect(d, max_distance=4)[0] for d in angles]
-    stim_radar = nengo.Node(detect)
+        return [body.detect(a, max_distance=4)[0] for a in arms]
 
+    space = nengo.Node(arms)
+    
     # radius=4, because angles are in range [0,4)
-    radar = nengo.Ensemble(n_neurons=N, dimensions=5, radius=4)
+    radar = nengo.Ensemble(n_neurons=N, dimensions=3, radius=4)
     nengo.Connection(stim_radar, radar)
+    
+    space_radar = nengo.Ensemble(n_neurons=N, dimensions=2, radius=4)
+    nengo.Connection(space, space_radar)
     
     def compute_speed(sensor_distances):
         """
         Basic movement function that avoids walls
         based on distance to wall from front sensor
         """
-        left, mid, right, arm_left, arm_right = sensor_distances
+        left, mid, right = sensor_distances
         return mid - 0.5
-
 
     def compute_turn(sensor_distances):
         """
         Basic movement function that avoids walls
         based on distance to wall between right and left sensor
         """
-        left, mid, right, arm_left, arm_right = sensor_distances
+        left, mid, right = sensor_distances
         turn = right - left
-        return turn, arm_left, arm_right
+        return turn
       
-    def exploration_move(move, noise, left_arm, right_arm, is_no_cooldown, turn=0.75):
+    def exploration_move(move, noise, left_arm, right_arm, turn=0.5):
         """
         Determine agent rotation such that the agent will randomly go right
         or left based on a noisy signal and whether there is room to turn, 
         as to explore the environment.
         """
-        turn_dist = 2
         # Turning right
-        if (noise > EXPLORE_THRESHOLD) and (right_arm > turn_dist) and is_no_cooldown:
+        if (noise > EXPLORE_THRESHOLD) and (right_arm > TURN_THRESHOLD):
             move = turn 
             
         # Turning left
-        if (noise < -EXPLORE_THRESHOLD) and (left_arm > turn_dist) and is_no_cooldown:
+        if (noise < -EXPLORE_THRESHOLD) and (left_arm > TURN_THRESHOLD):
             move = -turn 
         
         return move
         
-        
     def move(t, x):
-        speed, rotation, left_arm, right_arm, noise, cooldown_value = x
+        speed, rotation, left_arm, right_arm, noise= x
         dt = 0.001
-        max_speed = 8.0
-        max_rotate = 10.0
+        max_speed = 15.0
+        max_rotate = 5.0
         
         # Compute rotation and speed 
         basic_move = rotation * dt * max_rotate
-        # The agent should not do a sharp turn if the cooldown is still active
-        is_no_cooldown = cooldown_value < COOLDOWN_THRESHOLD
-        turn = exploration_move(basic_move, noise, left_arm, right_arm, is_no_cooldown)
+        turn = exploration_move(basic_move, noise, left_arm, right_arm)
         forward = speed * dt * max_speed
         
         # Perform action
@@ -161,43 +163,18 @@ with model:
 
     # Create ensemble to gather information about the agent's movement
     # Namely: speed (dim 0), turn speed (dim 1), and if we should stop moving (dim 2)
-    movement_info = nengo.Node(output=move, size_in=6)
+    movement_info = nengo.Node(output=move, size_in=5)
     nengo.Connection(radar, movement_info[0], function=compute_speed)
-    nengo.Connection(radar, movement_info[1:4], function=compute_turn)
+    nengo.Connection(radar, movement_info[1], function=compute_turn)
+    # Also gather information on whether the agent can move right or left based 
+    # on information from the agent arms
+    nengo.Connection(space_radar, movement_info[2:4])
     
     # Add noise
     noise_process = nengo.processes.WhiteNoise(dist=nengo.dists.Gaussian(0, 1), scale=False)
-    noise = nengo.Node(noise_process)
+    noise = nengo.Node(output=noise_process)
     nengo.Connection(noise, movement_info[4])
 
-    # Cooldown memory to remember when we are allowed to turn
-    model.cooldown_mem = spa.State(D, vocab=cooldown_vocab, feedback=0.9)
-    model.cooldown_mem.output.output = lambda t, x: x
-
-    def activate_cooldown(t, x):
-        """ This function starts a cooldown if we have a noise spike and there is currently no cooldown """
-        noise, cooldown_value = x
-        cooldown_vector = np.zeros(D)
-        cooldown_over = cooldown_value < COOLDOWN_THRESHOLD
-        if cooldown_over and (noise < -EXPLORE_THRESHOLD or noise > EXPLORE_THRESHOLD):
-            cooldown_vector = cooldown_vocab["COOLDOWN"].v.reshape(D)
-        # High constant because noise is only above threshold for a short duration
-        return 50 * cooldown_vector
-
-    # Hack: make intermediate cooldown node, because connection from noise to cooldown with a function resulted in
-    # very weird noise values (perhaps due to noise??)
-    intermediate_cooldown = nengo.Node(activate_cooldown, size_in=2, size_out=D)
-    nengo.Connection(noise, intermediate_cooldown[0])
-    nengo.Connection(intermediate_cooldown, model.cooldown_mem.input)
-
-    # Create an ensemble to save the value of the semantic pointer COOLDOWN which is used to inhibit restarting the
-    # cooldown in intermediate_cooldown and exploring in movement_info
-    cooldown_value = nengo.Ensemble(N, dimensions=1)
-    nengo.Connection(model.cooldown_mem.output, cooldown_value,
-                     function=lambda cooldown_mem: np.dot(cooldown_mem, cooldown_vocab["COOLDOWN"].v.reshape(D)))
-    nengo.Connection(cooldown_value, intermediate_cooldown[1])
-    nengo.Connection(cooldown_value, movement_info[5])
-    
     # if you wanted to know the position in the world, this is how to do it
     # The first two dimensions are X,Y coordinates, the third is the orientation
     # (plotting XY value shows the first two dimensions)
