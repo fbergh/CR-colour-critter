@@ -5,8 +5,8 @@ import numpy as np
 mymap = """
 #######
 #  M  #
-# # #B#
-# #Y# #
+#    B#
+#  Y  #
 #G   R#
 #######
 """
@@ -114,8 +114,10 @@ def movement_func(t, x):
     # t > 0.1 so the agent doesn't explore at initialisation
     if exploration_val > EXPLORATION_THRESHOLD and t > 0.1:
         body.turn(EXPLORATION_TURN)
+        print("boe")
     elif exploration_val < -EXPLORATION_THRESHOLD and t > 0.1:
         body.turn(-EXPLORATION_TURN)
+        print("schrik") 
     # Otherwise do a regular turn
     else:
         body.turn(turn)
@@ -201,8 +203,8 @@ with model:
     is_right_corridor_near = nengo.Ensemble(N, dimensions=1)
     is_left_corridor_near = nengo.Ensemble(N, dimensions=1)
     is_corridor_near_collector = nengo.Ensemble(N, dimensions=2)
-    nengo.Connection(stim_radar[2], is_right_corridor_near, function=lambda distance: distance > CORRIDOR_DIST)
     nengo.Connection(stim_radar[3], is_left_corridor_near, function=lambda distance: distance > CORRIDOR_DIST)
+    nengo.Connection(stim_radar[4], is_right_corridor_near, function=lambda distance: distance > CORRIDOR_DIST)
     nengo.Connection(is_left_corridor_near, is_corridor_near_collector[0])
     nengo.Connection(is_right_corridor_near, is_corridor_near_collector[1])
     # Create an ensemble to determine whether there is no corridor to the left or the right for inhibition later

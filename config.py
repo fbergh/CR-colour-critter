@@ -25,7 +25,7 @@ CORRIDOR_THRESHOLD = 0.3
 
 # Movement constants #
 # The amount that the agent should turn if it wants to explore
-EXPLORATION_TURN = 0.75
+EXPLORATION_TURN = 0.4
 # Default max speed and turn
 MAX_SPEED = 8.
 MAX_STANDARD_TURN = 10.
