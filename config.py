@@ -15,7 +15,7 @@ NOISE_SPIKE_THRESHOLD = 0.7
 # Due to short exploration impulse, return a high value so that it is usable
 EXPLORATION_IMPULSE = 100
 # Activation constant from exploration_collector to move, needed due to short exploration impulse
-EXPLORATION_THRESHOLD = 12
+EXPLORATION_THRESHOLD = 25
 # Threshold for when the cooldown is determined to be over
 COOLDOWN_THRESHOLD = 0.35
 # Threshold for when we perceive something as a corridor
