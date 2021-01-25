@@ -114,10 +114,9 @@ def movement_func(t, x):
     # t > 0.1 so the agent doesn't explore at initialisation
     if exploration_val > EXPLORATION_THRESHOLD and t > 0.1:
         body.turn(EXPLORATION_TURN)
-        print("boe")
     elif exploration_val < -EXPLORATION_THRESHOLD and t > 0.1:
         body.turn(-EXPLORATION_TURN)
-        print("schrik") 
+
     # Otherwise do a regular turn
     else:
         body.turn(turn)
