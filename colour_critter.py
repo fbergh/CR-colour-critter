@@ -5,8 +5,8 @@ import numpy as np
 mymap = """
 #######
 #  M  #
-#    B#
-#  Y  #
+# # #B#
+# #Y# #
 #G   R#
 #######
 """
@@ -116,14 +116,13 @@ def movement_func(t, x):
         body.turn(EXPLORATION_TURN)
     elif exploration_val < -EXPLORATION_THRESHOLD and t > 0.1:
         body.turn(-EXPLORATION_TURN)
-
     # Otherwise do a regular turn
     else:
         body.turn(turn)
     body.go_forward(forward)
 
 
-def activate_cooldown(t, inputs):
+def activate_cooldown_func(t, inputs):
     """
     We only activate the cooldown (i.e. we only spike) if
         1) there is currently no cooldown (is_cooldown);
@@ -199,21 +198,21 @@ with model:
     ### CORRIDOR SENSING ###
     # Nengo ensembles to determine whether a corridor is near based on information from the arms
     # (received form stim_radar)
-    is_right_corridor_near = nengo.Ensemble(N, dimensions=1)
-    is_left_corridor_near = nengo.Ensemble(N, dimensions=1)
-    is_corridor_near_collector = nengo.Ensemble(N, dimensions=2)
-    nengo.Connection(stim_radar[3], is_left_corridor_near, function=lambda distance: distance > CORRIDOR_DIST)
-    nengo.Connection(stim_radar[4], is_right_corridor_near, function=lambda distance: distance > CORRIDOR_DIST)
-    nengo.Connection(is_left_corridor_near, is_corridor_near_collector[0])
-    nengo.Connection(is_right_corridor_near, is_corridor_near_collector[1])
+    is_corridor_right = nengo.Ensemble(N, dimensions=1)
+    is_corridor_left = nengo.Ensemble(N, dimensions=1)
+    is_corridor_collector = nengo.Ensemble(N, dimensions=2)
+    nengo.Connection(stim_radar[3], is_corridor_left, function=lambda distance: distance > CORRIDOR_DIST)
+    nengo.Connection(stim_radar[4], is_corridor_right, function=lambda distance: distance > CORRIDOR_DIST)
+    nengo.Connection(is_corridor_left, is_corridor_collector[0])
+    nengo.Connection(is_corridor_right, is_corridor_collector[1])
     # Create an ensemble to determine whether there is no corridor to the left or the right for inhibition later
-    is_no_corridor_near = nengo.Ensemble(N, dimensions=1)
+    is_no_corridor = nengo.Ensemble(N, dimensions=1)
     # np.all(x < 0.5) computes whether there is no corridor near, > 0.8 is for robustness
-    nengo.Connection(is_corridor_near_collector, is_no_corridor_near, function=lambda x: np.all(x < 0.5) > 0.8)
+    nengo.Connection(is_corridor_collector, is_no_corridor, function=lambda x: np.all(x < 0.5) > 0.8)
 
     ### NOISE ###
     # Create a noise process which is used for whether the agent should explore
-    noise_process = nengo.processes.WhiteNoise(dist=nengo.dists.Gaussian(0, 2), scale=False)
+    noise_process = nengo.processes.WhiteNoise(dist=nengo.dists.Gaussian(0, 1), scale=False)
     noise_node = nengo.Node(noise_process)
 
     ### COOLDOWN SYSTEM ###
@@ -223,8 +222,8 @@ with model:
     model.cooldown_mem.output.output = lambda t, x: x
 
     # Hack: make intermediate cooldown node, because an ensemble cannot properly parse noise
-    intermediate_cooldown = nengo.Node(activate_cooldown, size_in=3, size_out=D)
-    nengo.Connection(intermediate_cooldown, model.cooldown_mem.input)
+    activate_cooldown = nengo.Node(activate_cooldown_func, size_in=3, size_out=D)
+    nengo.Connection(activate_cooldown, model.cooldown_mem.input)
 
     # Create an ensemble to save the activity of the semantic pointer COOLDOWN which is used to determine whether a
     # cooldown is currently active (with a similar dot product to colour memory)
@@ -237,9 +236,9 @@ with model:
     nengo.Connection(cooldown_value, is_cooldown, function=lambda cd_value: cd_value >= COOLDOWN_THRESHOLD)
 
     # Connect all information relevant fora cooldown to intermediate_cooldown (see activate_cooldown function)
-    nengo.Connection(noise_node, intermediate_cooldown[0])
-    nengo.Connection(is_cooldown, intermediate_cooldown[1])
-    nengo.Connection(is_no_corridor_near, intermediate_cooldown[2])
+    nengo.Connection(noise_node, activate_cooldown[0])
+    nengo.Connection(is_cooldown, activate_cooldown[1])
+    nengo.Connection(is_no_corridor, activate_cooldown[2])
 
 
     ### COLOUR COUNTING SYSTEM ###
@@ -286,8 +285,8 @@ with model:
     # Intermediate ensemble to collect information relevant to whether the agent should explore
     # (see exploration_move function)
     exploration_collector = nengo.Ensemble(N, dimensions=3)
-    nengo.Connection(is_left_corridor_near, exploration_collector[0])
-    nengo.Connection(is_right_corridor_near, exploration_collector[1])
+    nengo.Connection(is_corridor_left, exploration_collector[0])
+    nengo.Connection(is_corridor_right, exploration_collector[1])
     nengo.Connection(noise_node, exploration_collector[2])
 
     # EXCITATION & INHIBITION #
@@ -300,7 +299,7 @@ with model:
 
     # If there is currently a cooldown or there is no corridor visible, we should not explore
     nengo.Connection(is_cooldown, exploration_collector.neurons, transform=[[INHIBITION_CONSTANT]] * N)
-    nengo.Connection(is_no_corridor_near, exploration_collector.neurons, transform=[[INHIBITION_CONSTANT]] * N)
+    nengo.Connection(is_no_corridor, exploration_collector.neurons, transform=[[INHIBITION_CONSTANT]] * N)
     # If we have found the target number of colours, we can stop all forms of movement
     nengo.Connection(found_colours, radar.neurons, transform=[[INHIBITION_CONSTANT]] * N)
     nengo.Connection(found_colours, exploration_collector.neurons, transform=[[INHIBITION_CONSTANT]] * N)
